@@ -1,0 +1,103 @@
+package com.example.razorpaywebhook.controller;
+
+import com.example.razorpaywebhook.domain.entity.PaymentRecord;
+import com.example.razorpaywebhook.domain.entity.RefundRecord;
+import com.example.razorpaywebhook.dto.PageResponse;
+import com.example.razorpaywebhook.dto.PaymentDTO;
+import com.example.razorpaywebhook.dto.RefundRequest;
+import com.example.razorpaywebhook.dto.RefundResponse;
+import com.example.razorpaywebhook.enums.PaymentStatus;
+import com.example.razorpaywebhook.exception.PaymentNotFoundException;
+import com.example.razorpaywebhook.repository.PaymentRecordRepository;
+import com.example.razorpaywebhook.service.RefundService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@Slf4j
+@RestController
+@RequestMapping("/payments")
+@RequiredArgsConstructor
+public class PaymentController {
+
+    private final PaymentRecordRepository paymentRecordRepository;
+    private final RefundService refundService;
+
+    @GetMapping
+    public ResponseEntity<PageResponse<PaymentDTO>> getPayments(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status) {
+
+        int clampedSize = Math.min(size, 100);
+        PageRequest pageable = PageRequest.of(page, clampedSize,
+                Sort.by("createdAt").descending());
+
+        Page<PaymentRecord> resultPage = status != null
+                ? paymentRecordRepository.findByStatusOrderByCreatedAtDesc(
+                PaymentStatus.valueOf(status.toUpperCase()), pageable)
+                : paymentRecordRepository.findAllByOrderByCreatedAtDesc(pageable);
+
+        List<PaymentDTO> dtos = resultPage.getContent().stream()
+                .map(this::toPaymentDTO)
+                .toList();
+
+        return ResponseEntity.ok(PageResponse.<PaymentDTO>builder()
+                .items(dtos)
+                .totalElements(resultPage.getTotalElements())
+                .totalPages(resultPage.getTotalPages())
+                .currentPage(resultPage.getNumber())
+                .build());
+    }
+
+    @GetMapping("/{paymentId}")
+    public ResponseEntity<PaymentDTO> getPayment(@PathVariable String paymentId) {
+        PaymentRecord record = paymentRecordRepository.findByPaymentId(paymentId)
+                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+        return ResponseEntity.ok(toPaymentDTO(record));
+    }
+
+    @PostMapping("/{paymentId}/refund")
+    public ResponseEntity<?> refund(
+            @PathVariable String paymentId,
+            @RequestBody RefundRequest request,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey) {
+
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "INVALID_REQUEST",
+                            "message", "X-Idempotency-Key header is required"));
+        }
+
+        RefundRecord refund = refundService.initiateRefund(
+                paymentId, request.getAmount(), request.getReason(), idempotencyKey);
+
+        return ResponseEntity.ok(RefundResponse.builder()
+                .refundId(refund.getId().toString())
+                .paymentId(refund.getPaymentId())
+                .amount(refund.getAmount())
+                .status(refund.getStatus().name())
+                .build());
+    }
+
+    private PaymentDTO toPaymentDTO(PaymentRecord p) {
+        return PaymentDTO.builder()
+                .paymentId(p.getPaymentId())
+                .orderId(p.getOrderId())
+                .amount(p.getAmount())
+                .currency(p.getCurrency())
+                .status(p.getStatus().name())
+                .method(p.getMethod())
+                .capturedAt(p.getCapturedAt())
+                .retryCount(p.getRetryCount())
+                .correlationId(p.getCorrelationId())
+                .build();
+    }
+}

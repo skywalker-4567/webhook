@@ -1,0 +1,1 @@
+CREATE INDEX ON webhook_events(updated_at);

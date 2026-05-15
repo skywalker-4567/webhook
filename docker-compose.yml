@@ -1,0 +1,132 @@
+services:
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: razorpay-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-razorpay_webhook}
+      POSTGRES_USER:     ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d razorpay_webhook"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: razorpay-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: razorpay-ml
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  app-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: razorpay-app-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_started
+    environment:
+      DB_URL:                  jdbc:postgresql://postgres:5432/razorpay_webhook
+      DB_USER:                 ${DB_USER:-postgres}
+      DB_PASSWORD:             ${DB_PASSWORD:-postgres}
+      REDIS_HOST:              redis
+      REDIS_PORT:              6379
+      RAZORPAY_BASE_URL:       ${RAZORPAY_BASE_URL:-https://api.razorpay.com}
+      RAZORPAY_KEY_ID:         ${RAZORPAY_KEY_ID:-test_key}
+      RAZORPAY_KEY_SECRET:     ${RAZORPAY_KEY_SECRET:-test_secret}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-test_webhook_secret}
+      JWT_SECRET:              ${JWT_SECRET:-dGVzdC1zZWNyZXQta2V5LXRoYXQtaXMtYXQtbGVhc3QtMjU2LWJpdHMtbG9uZw==}
+      JWT_EXPIRY:              ${JWT_EXPIRY:-3600}
+      ML_SERVICE_URL:          http://ml-service:8000
+      SERVER_PORT:             8080
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  app-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: razorpay-app-2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_started
+    environment:
+      DB_URL:                  jdbc:postgresql://postgres:5432/razorpay_webhook
+      DB_USER:                 ${DB_USER:-postgres}
+      DB_PASSWORD:             ${DB_PASSWORD:-postgres}
+      REDIS_HOST:              redis
+      REDIS_PORT:              6379
+      RAZORPAY_BASE_URL:       ${RAZORPAY_BASE_URL:-https://api.razorpay.com}
+      RAZORPAY_KEY_ID:         ${RAZORPAY_KEY_ID:-test_key}
+      RAZORPAY_KEY_SECRET:     ${RAZORPAY_KEY_SECRET:-test_secret}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-test_webhook_secret}
+      JWT_SECRET:              ${JWT_SECRET:-dGVzdC1zZWNyZXQta2V5LXRoYXQtaXMtYXQtbGVhc3QtMjU2LWJpdHMtbG9uZw==}
+      JWT_EXPIRY:              ${JWT_EXPIRY:-3600}
+      ML_SERVICE_URL:          http://ml-service:8000
+      SERVER_PORT:             8080
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: razorpay-nginx
+    ports:
+      - "9090:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-1
+      - app-2
+      - frontend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: razorpay-frontend
+    expose:
+      - "80"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

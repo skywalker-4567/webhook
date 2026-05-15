@@ -1,0 +1,8 @@
+.env
+frontend/node_modules/
+frontend/dist/
+target/
+*.class
+*.jar
+.idea/
+*.iml

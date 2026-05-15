@@ -1,0 +1,89 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg:          #030712;
+  --color-surface:     #111827;
+  --color-border:      #1f2937;
+  --color-text:        #f9fafb;
+  --color-muted:       #6b7280;
+  --color-accent:      #f59e0b;
+  --color-accent-dim:  rgba(245, 158, 11, 0.1);
+  --color-success:     #4ade80;
+  --color-danger:      #f87171;
+  --color-warning:     #fbbf24;
+  --font-mono:         'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono,
+code,
+.hash-value {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: var(--color-surface); }
+::-webkit-scrollbar-thumb  { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
+
+/* Table base */
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+  padding: 0.625rem 1rem;
+  text-align: left;
+  background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+td {
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+tr:hover td { background-color: rgba(255, 255, 255, 0.02); }
+
+/* Status badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+.badge-green  { background: rgba(74, 222, 128, 0.1);  color: #4ade80; }
+.badge-red    { background: rgba(248, 113, 113, 0.1);  color: #f87171; }
+.badge-amber  { background: rgba(251, 191, 36, 0.1);   color: #fbbf24; }
+.badge-blue   { background: rgba(96, 165, 250, 0.1);   color: #60a5fa; }
+.badge-gray   { background: rgba(107, 114, 128, 0.1);  color: #9ca3af; }
