@@ -49,6 +49,20 @@ server:
   shutdown: graceful
 
 management:
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health, prometheus
+    endpoint:
+      health:
+        show-details: never
+      prometheus:
+        enabled: true
+    metrics:
+      export:
+        prometheus:
+          enabled: true
   endpoints:
     web:
       exposure:
@@ -63,3 +77,13 @@ logging:
   level:
     root: INFO
     com.example.razorpaywebhook: INFO
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operationsSorter: method
+    tagsSorter: alpha
+    try-it-out-enabled: true
+  api-docs:
+    path: /v3/api-docs
+  paths-to-match: /**

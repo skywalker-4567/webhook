@@ -8,7 +8,8 @@ import com.example.razorpaywebhook.exception.SignatureInvalidException;
 import com.example.razorpaywebhook.repository.WebhookEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,15 +28,29 @@ import java.util.UUID;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class WebhookIngestionService {
 
     private final WebhookEventRepository webhookEventRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
+    private final Counter idempotencyHitsCounter;
 
     @Value("${razorpay.webhook-secret}")
     private String webhookSecret;
+
+    public WebhookIngestionService(WebhookEventRepository webhookEventRepository,
+                                   ApplicationEventPublisher eventPublisher,
+                                   ObjectMapper objectMapper,
+                                   MeterRegistry meterRegistry) {
+        this.webhookEventRepository = webhookEventRepository;
+        this.eventPublisher = eventPublisher;
+        this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
+        this.idempotencyHitsCounter = Counter.builder("webhooks.idempotency.hits")
+                .description("Duplicate webhook event_id rejected as no-op")
+                .register(meterRegistry);
+    }
 
     @Transactional
     public WebhookEvent ingest(byte[] rawBody, String signature, String rawPayload) {
@@ -49,14 +64,16 @@ public class WebhookIngestionService {
 
         try {
             JsonNode root = parsePayload(rawPayload);
-            String eventId = root.path("id").asText();
-            String eventType = root.path("event").asText();
-            String paymentId = extractPaymentId(root);
+            String eventId      = root.path("id").asText();
+            String eventType    = root.path("event").asText();
+            String paymentId    = extractPaymentId(root);
             Instant eventCreatedAt = extractEventCreatedAt(root);
 
             return webhookEventRepository.findByEventId(eventId)
                     .map(existing -> {
                         log.info("Duplicate webhook event: {}", eventId);
+                        // metric: idempotency hit
+                        idempotencyHitsCounter.increment();
                         return existing;
                     })
                     .orElseGet(() -> saveAndPublish(
@@ -86,6 +103,9 @@ public class WebhookIngestionService {
     private WebhookEvent saveAndPublish(String eventId, String eventType, String paymentId,
                                         Instant eventCreatedAt, String rawPayload,
                                         String signature, UUID correlationId) {
+        // metric: webhooks.received tagged by event_type
+        meterRegistry.counter("webhooks.received", "event_type", eventType).increment();
+
         WebhookEvent event = WebhookEvent.builder()
                 .eventId(eventId)
                 .eventType(eventType)
@@ -141,11 +161,7 @@ public class WebhookIngestionService {
     }
 
     private String extractPaymentId(JsonNode root) {
-        return root.path("payload")
-                .path("payment")
-                .path("entity")
-                .path("id")
-                .asText("UNKNOWN");
+        return root.path("payload").path("payment").path("entity").path("id").asText("UNKNOWN");
     }
 
     private Instant extractEventCreatedAt(JsonNode root) {

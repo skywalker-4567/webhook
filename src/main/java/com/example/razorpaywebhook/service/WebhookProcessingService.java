@@ -6,7 +6,8 @@ import com.example.razorpaywebhook.enums.WebhookStatus;
 import com.example.razorpaywebhook.event.WebhookReceivedEvent;
 import com.example.razorpaywebhook.exception.UnknownEventTypeException;
 import com.example.razorpaywebhook.repository.WebhookEventRepository;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.context.ApplicationContext;
@@ -21,12 +22,25 @@ import java.util.UUID;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class WebhookProcessingService {
 
     private final WebhookEventRepository webhookEventRepository;
     private final PaymentService paymentService;
     private final ApplicationContext applicationContext;
+    private final Timer processingTimer;
+
+    public WebhookProcessingService(WebhookEventRepository webhookEventRepository,
+                                    PaymentService paymentService,
+                                    ApplicationContext applicationContext,
+                                    MeterRegistry meterRegistry) {
+        this.webhookEventRepository = webhookEventRepository;
+        this.paymentService = paymentService;
+        this.applicationContext = applicationContext;
+        this.processingTimer = Timer.builder("webhooks.processing.duration")
+                .description("End-to-end webhook processing time")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(meterRegistry);
+    }
 
     @Async
     @EventListener
@@ -37,6 +51,10 @@ public class WebhookProcessingService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processWebhook(UUID webhookEventId) {
+        processingTimer.record(() -> doProcess(webhookEventId));
+    }
+
+    private void doProcess(UUID webhookEventId) {
         int updated = webhookEventRepository.acquireProcessingLock(
                 webhookEventId, WebhookStatus.PROCESSING, WebhookStatus.RECEIVED);
         if (updated == 0) {

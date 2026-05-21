@@ -8,6 +8,12 @@ import com.example.razorpaywebhook.enums.WebhookStatus;
 import com.example.razorpaywebhook.ratelimit.RateLimiterService;
 import com.example.razorpaywebhook.repository.WebhookEventRepository;
 import com.example.razorpaywebhook.service.WebhookIngestionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,15 +32,28 @@ import java.util.Map;
 @RestController
 @RequestMapping("/webhooks")
 @RequiredArgsConstructor
+@Tag(name = "Webhooks", description = "Razorpay webhook ingestion and event management")
 public class WebhookController {
 
     private final WebhookIngestionService webhookIngestionService;
-    private final WebhookEventRepository webhookEventRepository;
-    private final RateLimiterService rateLimiterService;
+    private final WebhookEventRepository  webhookEventRepository;
+    private final RateLimiterService      rateLimiterService;
 
     @PostMapping("/razorpay")
+    @Operation(
+            summary = "Ingest Razorpay webhook",
+            description = "Receives and verifies a Razorpay webhook event via HMAC-SHA256 signature. " +
+                    "No JWT required — signature validation is the auth mechanism.",
+            security = {}
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Webhook accepted"),
+            @ApiResponse(responseCode = "400", description = "Invalid signature or malformed body"),
+            @ApiResponse(responseCode = "429", description = "Rate limit exceeded")
+    })
     public ResponseEntity<Map<String, String>> receiveWebhook(
             HttpServletRequest request,
+            @Parameter(description = "HMAC-SHA256 signature from Razorpay", required = true)
             @RequestHeader(value = "X-Razorpay-Signature", defaultValue = "") String signature) {
 
         String clientIp = request.getRemoteAddr();
@@ -50,8 +69,7 @@ public class WebhookController {
             payload  = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
         } catch (IOException ex) {
             log.error("Failed to read webhook request body", ex);
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", "INVALID_REQUEST"));
+            return ResponseEntity.badRequest().body(Map.of("error", "INVALID_REQUEST"));
         }
 
         webhookIngestionService.ingest(rawBytes, signature, payload);
@@ -59,6 +77,12 @@ public class WebhookController {
     }
 
     @GetMapping("/events")
+    @Operation(summary = "List webhook events", description = "Paginated list of webhook events with optional filters")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Page of webhook events"),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid JWT")
+    })
     public ResponseEntity<PageResponse<WebhookEventDTO>> getEvents(
             @RequestParam(required = false) String paymentId,
             @RequestParam(required = false) String status,
@@ -83,8 +107,7 @@ public class WebhookController {
         }
 
         List<WebhookEventDTO> dtos = resultPage.getContent().stream()
-                .map(this::toWebhookEventDTO)
-                .toList();
+                .map(this::toWebhookEventDTO).toList();
 
         return ResponseEntity.ok(PageResponse.<WebhookEventDTO>builder()
                 .items(dtos)
@@ -95,6 +118,9 @@ public class WebhookController {
     }
 
     @GetMapping("/stats")
+    @Operation(summary = "Webhook statistics", description = "Count of webhook events grouped by status")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "200", description = "Stats object")
     public ResponseEntity<WebhookStatsResponse> getStats() {
         long processed  = webhookEventRepository.countByStatus(WebhookStatus.PROCESSED);
         long failed     = webhookEventRepository.countByStatus(WebhookStatus.FAILED);
@@ -103,12 +129,8 @@ public class WebhookController {
         long total      = processed + failed + processing + received;
 
         return ResponseEntity.ok(WebhookStatsResponse.builder()
-                .total(total)
-                .processed(processed)
-                .failed(failed)
-                .processing(processing)
-                .received(received)
-                .build());
+                .total(total).processed(processed).failed(failed)
+                .processing(processing).received(received).build());
     }
 
     private WebhookEventDTO toWebhookEventDTO(WebhookEvent e) {

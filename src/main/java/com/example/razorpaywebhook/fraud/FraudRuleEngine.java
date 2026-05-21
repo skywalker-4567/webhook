@@ -2,6 +2,7 @@ package com.example.razorpaywebhook.fraud;
 
 import com.example.razorpaywebhook.domain.entity.PaymentRecord;
 import com.example.razorpaywebhook.enums.PaymentStatus;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -13,9 +14,15 @@ import java.util.List;
 @Component
 public class FraudRuleEngine {
 
-    private static final long HIGH_AMOUNT_THRESHOLD = 100_000L;
+    private static final long HIGH_AMOUNT_THRESHOLD       = 100_000L;
     private static final int  REPEATED_FAILURE_MIN_RETRIES = 2;
-    private static final long RAPID_STATE_CHANGE_SECONDS = 5L;
+    private static final long RAPID_STATE_CHANGE_SECONDS  = 5L;
+
+    private final MeterRegistry meterRegistry;
+
+    public FraudRuleEngine(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+    }
 
     public FraudResult evaluate(PaymentRecord record, String eventType) {
         List<String> triggeredRules = new ArrayList<>();
@@ -24,12 +31,16 @@ public class FraudRuleEngine {
         checkRepeatedFailure(record, triggeredRules);
         checkRapidStateChange(record, triggeredRules);
 
+        // metric: one counter increment per triggered rule
+        for (String rule : triggeredRules) {
+            meterRegistry.counter("fraud.rule.triggered", "rule_name", rule).increment();
+        }
+
         boolean isFraud = !triggeredRules.isEmpty();
         if (isFraud) {
             log.info("Fraud rules triggered for paymentId={} rules={}",
                     record.getPaymentId(), triggeredRules);
         }
-
         return new FraudResult(isFraud, triggeredRules);
     }
 
@@ -49,7 +60,6 @@ public class FraudRuleEngine {
     private void checkRapidStateChange(PaymentRecord record, List<String> triggered) {
         if (record.getRetryCount() <= 0) return;
         if (record.getCreatedAt() == null || record.getUpdatedAt() == null) return;
-
         long diffSeconds = Duration.between(record.getCreatedAt(), record.getUpdatedAt())
                 .toSeconds();
         if (diffSeconds < RAPID_STATE_CHANGE_SECONDS) {

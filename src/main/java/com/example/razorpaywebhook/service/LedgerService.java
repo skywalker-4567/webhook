@@ -20,6 +20,7 @@ import com.example.razorpaywebhook.repository.LedgerAccountRepository;
 import com.example.razorpaywebhook.repository.LedgerEntryRepository;
 import com.example.razorpaywebhook.repository.LedgerRetryQueueRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -44,14 +45,11 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class LedgerService {
 
-    private final LedgerEntryRepository ledgerEntryRepository;
-    private final LedgerAccountRepository ledgerAccountRepository;
+    private final LedgerEntryRepository      ledgerEntryRepository;
+    private final LedgerAccountRepository    ledgerAccountRepository;
     private final LedgerRetryQueueRepository ledgerRetryQueueRepository;
-    private final ObjectMapper objectMapper;
-
-    // -------------------------------------------------------------------------
-    // Event listeners
-    // -------------------------------------------------------------------------
+    private final ObjectMapper               objectMapper;
+    private final MeterRegistry              meterRegistry;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -64,7 +62,7 @@ public class LedgerService {
 
             if (ledgerEntryRepository.existsByTransactionRefAndEntryType(
                     transactionRef, EntryType.DEBIT)) {
-                log.info("Ledger already posted for eventId={} — skipping", transactionRef);
+                log.info("Ledger already posted for eventId={} - skipping", transactionRef);
                 return;
             }
 
@@ -75,32 +73,16 @@ public class LedgerService {
             UUID transactionId = UUID.randomUUID();
 
             LedgerEntry debit = new LedgerEntry(
-                    transactionRef,
-                    TransactionType.PAYMENT,
-                    EntryType.DEBIT,
-                    customerAccount.getId(),
-                    event.amount(),
-                    event.currency(),
-                    "Payment captured — debit customer",
-                    event.paymentId(),
-                    event.internalOrderId(),
-                    transactionId,
-                    event.correlationId()
-            );
+                    transactionRef, TransactionType.PAYMENT, EntryType.DEBIT,
+                    customerAccount.getId(), event.amount(), event.currency(),
+                    "Payment captured - debit customer",
+                    event.paymentId(), event.internalOrderId(), transactionId, event.correlationId());
 
             LedgerEntry credit = new LedgerEntry(
-                    transactionRef,
-                    TransactionType.PAYMENT,
-                    EntryType.CREDIT,
-                    gatewayAccount.getId(),
-                    event.amount(),
-                    event.currency(),
-                    "Payment captured — credit gateway",
-                    event.paymentId(),
-                    event.internalOrderId(),
-                    transactionId,
-                    event.correlationId()
-            );
+                    transactionRef, TransactionType.PAYMENT, EntryType.CREDIT,
+                    gatewayAccount.getId(), event.amount(), event.currency(),
+                    "Payment captured - credit gateway",
+                    event.paymentId(), event.internalOrderId(), transactionId, event.correlationId());
 
             ledgerEntryRepository.save(debit);
             ledgerEntryRepository.save(credit);
@@ -133,7 +115,7 @@ public class LedgerService {
 
             if (ledgerEntryRepository.existsByTransactionRefAndEntryType(
                     transactionRef, EntryType.DEBIT)) {
-                log.info("Ledger already posted for refund eventId={} — skipping", transactionRef);
+                log.info("Ledger already posted for refund eventId={} - skipping", transactionRef);
                 return;
             }
 
@@ -144,32 +126,16 @@ public class LedgerService {
             UUID transactionId = UUID.randomUUID();
 
             LedgerEntry debit = new LedgerEntry(
-                    transactionRef,
-                    TransactionType.REFUND,
-                    EntryType.DEBIT,
-                    gatewayAccount.getId(),
-                    event.amount(),
-                    event.currency(),
-                    "Refund — debit gateway",
-                    event.paymentId(),
-                    event.internalOrderId(),
-                    transactionId,
-                    event.correlationId()
-            );
+                    transactionRef, TransactionType.REFUND, EntryType.DEBIT,
+                    gatewayAccount.getId(), event.amount(), event.currency(),
+                    "Refund - debit gateway",
+                    event.paymentId(), event.internalOrderId(), transactionId, event.correlationId());
 
             LedgerEntry credit = new LedgerEntry(
-                    transactionRef,
-                    TransactionType.REFUND,
-                    EntryType.CREDIT,
-                    customerAccount.getId(),
-                    event.amount(),
-                    event.currency(),
-                    "Refund — credit customer",
-                    event.paymentId(),
-                    event.internalOrderId(),
-                    transactionId,
-                    event.correlationId()
-            );
+                    transactionRef, TransactionType.REFUND, EntryType.CREDIT,
+                    customerAccount.getId(), event.amount(), event.currency(),
+                    "Refund - credit customer",
+                    event.paymentId(), event.internalOrderId(), transactionId, event.correlationId());
 
             ledgerEntryRepository.save(debit);
             ledgerEntryRepository.save(credit);
@@ -185,16 +151,12 @@ public class LedgerService {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Settlement double-entry (called by SettlementService)
-    // -------------------------------------------------------------------------
-
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void postSettlement(String transactionRef, long amount, String currency,
                                String paymentId, UUID orderId, UUID correlationId) {
         if (ledgerEntryRepository.existsByTransactionRefAndEntryType(
                 transactionRef, EntryType.DEBIT)) {
-            log.info("Settlement already posted for ref={} — skipping", transactionRef);
+            log.info("Settlement already posted for ref={} - skipping", transactionRef);
             return;
         }
 
@@ -207,38 +169,29 @@ public class LedgerService {
         LedgerEntry debit = new LedgerEntry(
                 transactionRef, TransactionType.SETTLEMENT, EntryType.DEBIT,
                 gatewayAccount.getId(), amount, currency,
-                "Settlement — debit gateway", paymentId, orderId,
-                transactionId, correlationId);
+                "Settlement - debit gateway", paymentId, orderId, transactionId, correlationId);
 
         LedgerEntry credit = new LedgerEntry(
                 transactionRef, TransactionType.SETTLEMENT, EntryType.CREDIT,
                 merchantAccount.getId(), amount, currency,
-                "Settlement — credit merchant", paymentId, orderId,
-                transactionId, correlationId);
+                "Settlement - credit merchant", paymentId, orderId, transactionId, correlationId);
 
         ledgerEntryRepository.save(debit);
         ledgerEntryRepository.save(credit);
         log.info("Ledger posted SETTLEMENT: transactionRef={}", transactionRef);
     }
 
-    // -------------------------------------------------------------------------
-    // Query API
-    // -------------------------------------------------------------------------
-
     @Transactional(readOnly = true)
     public AccountBalanceResponse getAccountBalance(LedgerAccountType type, Instant asOf) {
         LedgerAccount account = requireAccount(type);
-
         List<LedgerEntry> entries = ledgerEntryRepository
                 .findAllByAccountIdAndCreatedAtBefore(account.getId(), asOf);
-
         long credits = entries.stream()
                 .filter(e -> e.getEntryType() == EntryType.CREDIT)
                 .mapToLong(LedgerEntry::getAmount).sum();
         long debits = entries.stream()
                 .filter(e -> e.getEntryType() == EntryType.DEBIT)
                 .mapToLong(LedgerEntry::getAmount).sum();
-
         return AccountBalanceResponse.builder()
                 .accountType(type.name())
                 .balance(credits - debits)
@@ -280,10 +233,6 @@ public class LedgerService {
                         account.getId(), from, to, pageable));
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
     private LedgerResponse buildLedgerResponse(Page<LedgerEntry> page) {
         Map<UUID, String> accountTypeMap = ledgerAccountRepository.findAll()
                 .stream()
@@ -292,20 +241,13 @@ public class LedgerService {
                         a -> a.getAccountType().name()));
 
         List<LedgerEntry> entries = page.getContent();
-
-        long totalDebit = entries.stream()
-                .filter(e -> e.getEntryType() == EntryType.DEBIT)
+        long totalDebit  = entries.stream().filter(e -> e.getEntryType() == EntryType.DEBIT)
                 .mapToLong(LedgerEntry::getAmount).sum();
-        long totalCredit = entries.stream()
-                .filter(e -> e.getEntryType() == EntryType.CREDIT)
+        long totalCredit = entries.stream().filter(e -> e.getEntryType() == EntryType.CREDIT)
                 .mapToLong(LedgerEntry::getAmount).sum();
-
-        List<LedgerEntryDTO> dtos = entries.stream()
-                .map(e -> toDto(e, accountTypeMap))
-                .toList();
 
         return LedgerResponse.builder()
-                .entries(dtos)
+                .entries(entries.stream().map(e -> toDto(e, accountTypeMap)).toList())
                 .totalDebit(totalDebit)
                 .totalCredit(totalCredit)
                 .totalElements(page.getTotalElements())
@@ -338,8 +280,7 @@ public class LedgerService {
 
     private void validateAmount(long amount, String currency) {
         if (amount <= 0) {
-            throw new LedgerInvariantException(
-                    "Ledger amount must be positive, got: " + amount);
+            throw new LedgerInvariantException("Ledger amount must be positive, got: " + amount);
         }
         if (currency == null || currency.isBlank()) {
             throw new LedgerCurrencyMismatchException("Currency must not be blank");
@@ -347,6 +288,7 @@ public class LedgerService {
     }
 
     private void enqueueRetry(String eventType, Object event, String failureReason) {
+        meterRegistry.counter("ledger.write.failures", "event_type", eventType).increment();
         try {
             String payload = objectMapper.writeValueAsString(event);
             LedgerRetryQueue retryItem = LedgerRetryQueue.builder()
@@ -358,7 +300,6 @@ public class LedgerService {
                     .nextRetryAt(Instant.now().plusSeconds(60))
                     .build();
             ledgerRetryQueueRepository.save(retryItem);
-
             log.info("Enqueued ledger retry for eventType={}", eventType);
         } catch (Exception ex) {
             log.error("Failed to enqueue ledger retry for eventType={}", eventType, ex);

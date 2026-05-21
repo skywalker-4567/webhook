@@ -2,11 +2,11 @@ package com.example.razorpaywebhook.domain.entity;
 
 import com.example.razorpaywebhook.enums.RetryStatus;
 import jakarta.persistence.*;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 import lombok.*;
-import org.hibernate.annotations.UuidGenerator;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.UuidGenerator;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.UUID;
