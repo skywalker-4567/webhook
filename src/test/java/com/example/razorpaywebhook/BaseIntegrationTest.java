@@ -2,6 +2,7 @@ package com.example.razorpaywebhook;
 
 import com.example.razorpaywebhook.distributed.DistributedLockService;
 import com.example.razorpaywebhook.ratelimit.RateLimiterService;
+import com.example.razorpaywebhook.distributed.LeaderElectionService;
 import com.example.razorpaywebhook.fraud.MLClient;
 import com.example.razorpaywebhook.fraud.MLScoreResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,6 +62,7 @@ public abstract class BaseIntegrationTest {
 
     @MockBean DistributedLockService distributedLockService;
     @MockBean RateLimiterService rateLimiterService;
+    @MockBean LeaderElectionService leaderElectionService;
     @MockBean MLClient               mlClient;
 
     @LocalServerPort  protected int              port;
