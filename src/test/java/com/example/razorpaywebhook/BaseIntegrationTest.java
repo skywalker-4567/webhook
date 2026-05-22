@@ -37,7 +37,8 @@ import static org.mockito.Mockito.when;
         properties = {
                 "spring.autoconfigure.exclude=" +
                         "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration," +
-                        "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+                        "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration," +
+                        "org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration"
         }
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -71,6 +72,9 @@ public abstract class BaseIntegrationTest {
     @MockBean LedgerRetryScheduler    ledgerRetryScheduler;
     @MockBean ReconciliationScheduler reconciliationScheduler;
     @MockBean RetryScheduler          retryScheduler;
+
+    @MockBean(name = "redisTemplate") org.springframework.data.redis.core.RedisTemplate<String, Object> redisTemplate;
+    @MockBean(name = "stringRedisTemplate") org.springframework.data.redis.core.StringRedisTemplate stringRedisTemplate;
 
     @LocalServerPort  protected int             port;
     @Autowired        protected TestRestTemplate restTemplate;
