@@ -1,10 +1,13 @@
 package com.example.razorpaywebhook;
 
 import com.example.razorpaywebhook.distributed.DistributedLockService;
-import com.example.razorpaywebhook.ratelimit.RateLimiterService;
 import com.example.razorpaywebhook.distributed.LeaderElectionService;
 import com.example.razorpaywebhook.fraud.MLClient;
 import com.example.razorpaywebhook.fraud.MLScoreResponse;
+import com.example.razorpaywebhook.ratelimit.RateLimiterService;
+import com.example.razorpaywebhook.scheduler.LedgerRetryScheduler;
+import com.example.razorpaywebhook.scheduler.ReconciliationScheduler;
+import com.example.razorpaywebhook.scheduler.RetryScheduler;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -60,31 +63,32 @@ public abstract class BaseIntegrationTest {
         registry.add("ml.service.base-url",        () -> "http://localhost:9999");
     }
 
-    @MockBean DistributedLockService distributedLockService;
-    @MockBean RateLimiterService rateLimiterService;
-    @MockBean LeaderElectionService leaderElectionService;
-    @MockBean MLClient               mlClient;
+    // Mock all Redis-dependent beans
+    @MockBean DistributedLockService  distributedLockService;
+    @MockBean LeaderElectionService   leaderElectionService;
+    @MockBean RateLimiterService      rateLimiterService;
+    @MockBean MLClient                mlClient;
+    @MockBean LedgerRetryScheduler    ledgerRetryScheduler;
+    @MockBean ReconciliationScheduler reconciliationScheduler;
+    @MockBean RetryScheduler          retryScheduler;
 
-    @LocalServerPort  protected int              port;
-    @Autowired        protected TestRestTemplate  restTemplate;
-    @Autowired        protected JdbcTemplate      jdbcTemplate;
+    @LocalServerPort  protected int             port;
+    @Autowired        protected TestRestTemplate restTemplate;
+    @Autowired        protected JdbcTemplate     jdbcTemplate;
 
     protected static final String WEBHOOK_SECRET = "test_secret";
 
     @BeforeEach
     void setUpMocksAndData() {
-        when(rateLimiterService.isAllowed(anyString(), anyInt(), anyLong()))
-                .thenReturn(true);
         when(distributedLockService.tryLock(anyString(), anyString(), anyLong()))
                 .thenReturn(true);
         when(distributedLockService.releaseLock(anyString(), anyString()))
                 .thenReturn(true);
-
-        // MLScoreResponse(double fraudScore, boolean isAnomaly) — confirmed order
+        when(rateLimiterService.isAllowed(anyString(), anyInt(), anyLong()))
+                .thenReturn(true);
         when(mlClient.score(any()))
                 .thenReturn(Optional.of(new MLScoreResponse(0.1, false)));
 
-        // Truncate all data including ledger_accounts so each test is clean
         jdbcTemplate.execute("""
                 TRUNCATE webhook_events, payment_records, ledger_entries,
                          audit_log, fraud_checks, orders, reconciliation_log,
@@ -92,7 +96,6 @@ public abstract class BaseIntegrationTest {
                          ledger_accounts, users, api_keys RESTART IDENTITY CASCADE
                 """);
 
-        // Seed ledger accounts — ON CONFLICT DO NOTHING safe after truncate
         jdbcTemplate.execute("""
                 INSERT INTO ledger_accounts (account_type, account_code, description)
                 VALUES
@@ -102,7 +105,6 @@ public abstract class BaseIntegrationTest {
                 ON CONFLICT DO NOTHING
                 """);
 
-        // Seed admin user
         jdbcTemplate.execute("""
                 INSERT INTO users (username, password, role)
                 VALUES ('admin',
