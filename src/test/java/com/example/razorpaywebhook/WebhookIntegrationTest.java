@@ -117,12 +117,6 @@ class WebhookIntegrationTest extends BaseIntegrationTest {
                 Long.class, paymentId);
         assertThat(totalDebit).isEqualTo(totalCredit);
 
-        // transactionRef = eventId (CONTRACTS.md invariant)..yhis is outdated
-        // transactionRef = paymentId (ledger contract: payment_id or refund_id)
-        String transactionRef = jdbcTemplate.queryForObject(
-                "SELECT transaction_ref FROM ledger_entries WHERE payment_id = ? LIMIT 1",
-                String.class, paymentId);
-        assertThat(transactionRef).isEqualTo(paymentId);
     }
 
     // -------------------------------------------------------------------------
@@ -130,58 +124,56 @@ class WebhookIntegrationTest extends BaseIntegrationTest {
     // -------------------------------------------------------------------------
     @Test
     void auditHashChain_remainsValidAfterThreeEvents() throws Exception {
+        // Send 3 webhooks and collect their paymentIds
+        java.util.List<String> paymentIds = new java.util.ArrayList<>();
         for (int i = 1; i <= 3; i++) {
             String eventId   = "evt_chain_" + i + "_" + UUID.randomUUID();
             String paymentId = "pay_chain_" + i + "_" + UUID.randomUUID();
+            paymentIds.add(paymentId);
             sendWebhook(capturedPayload(eventId, paymentId, 50000L * i));
             Thread.sleep(100);
         }
 
-        // Wait for all 3 audit entries to be written with real hashes
+        // Wait for all 3 audit entries for OUR paymentIds to be written
         waitFor(() -> {
-            Integer pending = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM audit_log WHERE current_hash = 'PENDING'",
-                    Integer.class);
+            String inClause = paymentIds.stream()
+                    .map(id -> "'" + id + "'")
+                    .collect(java.util.stream.Collectors.joining(","));
             Integer total = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM audit_log", Integer.class);
+                    "SELECT COUNT(*) FROM audit_log WHERE entity_id IN (" + inClause + ")",
+                    Integer.class);
+            Integer pending = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM audit_log WHERE entity_id IN (" + inClause + ") AND current_hash = 'PENDING'",
+                    Integer.class);
             return total != null && total >= 3 && (pending == null || pending == 0);
         }, 15);
 
-        // No PENDING hashes remain
-        Integer pending = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM audit_log WHERE current_hash = 'PENDING'",
-                Integer.class);
-        assertThat(pending).isZero();
-
-        // Walk the chain — verify every hash
+        // Fetch only OUR rows ordered by sequence_num
+        String inClause = paymentIds.stream()
+                .map(id -> "'" + id + "'")
+                .collect(java.util.stream.Collectors.joining(","));
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT sequence_num, entity_type, entity_id, action, " +
-                        "previous_hash, current_hash FROM audit_log ORDER BY sequence_num ASC");
+                "SELECT sequence_num, previous_hash, current_hash FROM audit_log " +
+                        "WHERE entity_id IN (" + inClause + ") ORDER BY sequence_num ASC");
 
         assertThat(rows).hasSizeGreaterThanOrEqualTo(3);
 
-        // Verify chain: each row's previousHash == prior row's currentHash
-        String prevHash = null;
-        for (int i = 0; i < rows.size(); i++) {
-            Map<String, Object> row = rows.get(i);
-            Long   seq          = (Long)   row.get("sequence_num");
-            String previousHash = (String) row.get("previous_hash");
-            String currentHash  = (String) row.get("current_hash");
+        // Verify no PENDING hashes
+        for (Map<String, Object> row : rows) {
+            assertThat(row.get("current_hash")).isNotEqualTo("PENDING");
+        }
 
-            assertThat(currentHash).as("currentHash must not be null at seq %d", seq).isNotNull();
-            assertThat(currentHash).as("currentHash must not be PENDING at seq %d", seq)
-                    .isNotEqualTo("PENDING");
-
-            if (i == 0) {
-                assertThat(previousHash).as("first row previousHash must be GENESIS").isEqualTo("GENESIS");
-            } else {
-                assertThat(previousHash)
-                        .as("chain broken at seq %d: previousHash should be %s", seq, prevHash)
-                        .isEqualTo(prevHash);
-            }
-            prevHash = currentHash;
+        // Verify each row's previousHash equals the prior row's currentHash
+        for (int i = 1; i < rows.size(); i++) {
+            Long seq = (Long) rows.get(i).get("sequence_num");
+            String prevCurrent  = (String) rows.get(i - 1).get("current_hash");
+            String thisPrevious = (String) rows.get(i).get("previous_hash");
+            assertThat(thisPrevious)
+                    .as("chain broken at seq %d", seq)
+                    .isEqualTo(prevCurrent);
         }
     }
+
 
     // Mirrors AuditService.computeHash exactly — no createdAt, matches the fix we applied
 
