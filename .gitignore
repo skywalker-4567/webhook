@@ -6,3 +6,5 @@ target/
 *.jar
 .idea/
 *.iml
+
+test/load-test-results.json
