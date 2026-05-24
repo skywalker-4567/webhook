@@ -15,8 +15,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -31,13 +31,26 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/webhooks")
-@RequiredArgsConstructor
 @Tag(name = "Webhooks", description = "Razorpay webhook ingestion and event management")
 public class WebhookController {
 
     private final WebhookIngestionService webhookIngestionService;
     private final WebhookEventRepository  webhookEventRepository;
     private final RateLimiterService      rateLimiterService;
+    private final int                     rateLimitPerIp;
+    private final long                    rateLimitWindowMs;
+
+    public WebhookController(WebhookIngestionService webhookIngestionService,
+                             WebhookEventRepository webhookEventRepository,
+                             RateLimiterService rateLimiterService,
+                             @Value("${app.rate-limit.webhook-per-ip:100}") int rateLimitPerIp,
+                             @Value("${app.rate-limit.webhook-window-ms:60000}") long rateLimitWindowMs) {
+        this.webhookIngestionService = webhookIngestionService;
+        this.webhookEventRepository  = webhookEventRepository;
+        this.rateLimiterService      = rateLimiterService;
+        this.rateLimitPerIp          = rateLimitPerIp;
+        this.rateLimitWindowMs       = rateLimitWindowMs;
+    }
 
     @PostMapping("/razorpay")
     @Operation(
@@ -57,7 +70,7 @@ public class WebhookController {
             @RequestHeader(value = "X-Razorpay-Signature", defaultValue = "") String signature) {
 
         String clientIp = request.getRemoteAddr();
-        if (!rateLimiterService.isAllowed("webhook:" + clientIp, 100, 60_000)) {
+        if (!rateLimiterService.isAllowed("webhook:" + clientIp, rateLimitPerIp, rateLimitWindowMs)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .body(Map.of("error", "RATE_LIMIT_EXCEEDED"));
         }

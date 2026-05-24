@@ -79,6 +79,10 @@ logging:
     com.example.razorpaywebhook: INFO
 
 springdoc:
+  app:
+    rate-limit:
+      webhook-per-ip: 100
+      webhook-window-ms: 60000
   swagger-ui:
     path: /swagger-ui.html
     operationsSorter: method
