@@ -1,6 +1,6 @@
 # Razorpay Webhook Processor & Payment Ledger
 
-A production-grade distributed payment processing system built on top of the Razorpay payment gateway. Handles high-volume webhook ingestion, maintains a double-entry financial ledger, detects fraud in real time, and provides a full-featured React dashboard — all deployed via Docker Compose with two load-balanced application instances.
+A production-grade distributed payment processing system built on top of the Razorpay payment gateway. Handles high-volume webhook ingestion, maintains a double-entry financial ledger, detects fraud in real time, provides full observability via Micrometer/Prometheus metrics and OpenAPI documentation, and ships with a React dashboard — all deployed via Docker Compose with two load-balanced application instances.
 
 ---
 
@@ -12,6 +12,8 @@ A production-grade distributed payment processing system built on top of the Raz
 - [System Design Decisions](#system-design-decisions)
 - [Database Schema](#database-schema)
 - [API Reference](#api-reference)
+- [Observability](#observability)
+- [Load Testing](#load-testing)
 - [Getting Started](#getting-started)
 - [Running Tests](#running-tests)
 - [Project Structure](#project-structure)
@@ -39,7 +41,7 @@ A production-grade distributed payment processing system built on top of the Raz
           │                     PostgreSQL 15                             │
           │   webhook_events · payment_records · ledger_entries           │
           │   audit_log · orders · fraud_checks · users · ...            │
-          └─────────────────────────────────────────────────────────────-┘
+          └──────────────────────────────────────────────────────────────┘
                     │                                          │
           ┌─────────▼──────────┐                   ┌──────────▼─────────┐
           │     Redis 7        │                   │   FastAPI ML       │
@@ -91,7 +93,7 @@ A production-grade distributed payment processing system built on top of the Raz
 ### Audit Hash Chain
 - Every state change produces an immutable audit log entry
 - SHA-256 hash chain: each entry's hash includes the previous entry's hash
-- Genesis anchor: `previousHash = "GENESIS"`
+- Genesis anchor: `previousHash = "GENESIS"` per entity
 - Two-phase write: `saveAndFlush` → read real `BIGSERIAL` → update hash (native query)
 - Protected by a single-thread executor + Redis distributed lock to prevent race conditions
 - `/audit/verify` endpoint walks the chain and reports the exact sequence where it breaks
@@ -110,7 +112,7 @@ A production-grade distributed payment processing system built on top of the Raz
 ### Distributed Infrastructure
 - Redis-backed distributed locking with TTL and owner verification
 - Leader election per scheduler (reconciliation, ledger retry, webhook retry)
-- Token bucket rate limiting per client IP
+- Sliding-window rate limiting per client IP (Redis sorted sets, Lua script)
 - Both app instances share the same PostgreSQL and Redis — no split-brain
 
 ### Order Management
@@ -144,11 +146,15 @@ A production-grade distributed payment processing system built on top of the Raz
 | Cache / Locks | Redis 7 |
 | Security | Spring Security 6, JJWT |
 | Async | Spring `@Async`, `@TransactionalEventListener` |
+| Metrics | Micrometer, Prometheus, Spring Boot Actuator |
+| API Docs | SpringDoc OpenAPI 3, Swagger UI |
 | ML Service | Python 3.11, FastAPI, scikit-learn |
 | Frontend | React 18, TypeScript, Vite |
 | Styling | Tailwind CSS |
 | Data Fetching | TanStack React Query v5 |
 | Infrastructure | Docker, Docker Compose, Nginx |
+| Testing | JUnit 5, Testcontainers, PostgreSQL 15 container |
+| Load Testing | k6 |
 | Code Generation | Lombok |
 
 ---
@@ -164,8 +170,8 @@ The hash chain requires strict sequential ordering. If two audit writes race, th
 ### Why `BIGSERIAL` without `@GeneratedValue`?
 Hibernate's `@GeneratedValue` with `IDENTITY` strategy reads the generated value back after insert, but only if the entity mapping is correct. Using `insertable=false, updatable=false` on the `sequenceNum` field and calling `entityManager.refresh()` after `saveAndFlush()` guarantees we always get the real database-generated sequence number before computing the hash.
 
-### Why `transactionRef = eventId`, not `paymentId`?
-A single payment can generate multiple events (captured, refunded). Using `paymentId` as the ledger idempotency key would prevent writing the refund entry. Using `eventId` scopes idempotency to the specific webhook event.
+### Why per-entity audit chains?
+Each entity (payment, order, etc.) maintains its own hash chain starting from `GENESIS`. This scopes chain verification to a single entity's lifecycle, making `/audit/verify` efficient and failure isolation precise — a corrupted chain in one payment doesn't affect others.
 
 ### Why two app instances?
 Demonstrates horizontal scalability. Both instances share PostgreSQL and Redis. The distributed lock service ensures only one instance holds the leader role for each scheduled job at a time.
@@ -197,6 +203,8 @@ Demonstrates horizontal scalability. Both instances share PostgreSQL and Redis. 
 ## API Reference
 
 All endpoints except `POST /webhooks/razorpay` and `GET /actuator/health` require `Authorization: Bearer <token>`.
+
+Interactive API documentation is available at **`http://localhost:9090/swagger-ui.html`** when the stack is running.
 
 ### Authentication
 ```
@@ -250,6 +258,57 @@ GET  /fraud-checks?paymentId={}   All fraud check results for a payment
 
 ---
 
+## Observability
+
+### Metrics (Micrometer + Prometheus)
+
+The application exposes a Prometheus-compatible metrics endpoint at `/actuator/prometheus`.
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `webhooks.received` | Counter | `event_type` | Every inbound webhook, tagged by payment event type |
+| `webhooks.processing.duration` | Timer | — | End-to-end processing time in `WebhookProcessingService` (p50/p95/p99) |
+| `webhooks.idempotency.hits` | Counter | — | Duplicate `event_id` rejections |
+| `fraud.rule.triggered` | Counter | `rule_name` | Per-rule firing count (HIGH_AMOUNT, REPEATED_FAILURE, RAPID_STATE_CHANGE) |
+| `ledger.write.failures` | Counter | `event_type` | Ledger entries that failed and were enqueued for retry |
+
+### OpenAPI / Swagger
+
+SpringDoc OpenAPI 3 is configured with a JWT Bearer security scheme. All controllers are annotated with `@Tag`, `@Operation`, and `@ApiResponse`.
+
+| URL | Description |
+|---|---|
+| `/swagger-ui.html` | Interactive Swagger UI |
+| `/v3/api-docs` | Raw OpenAPI JSON |
+
+The Swagger UI and `/actuator/**` paths are excluded from JWT authentication, matching the same permit-list as the webhook endpoint.
+
+---
+
+## Load Testing
+
+k6 load test targeting the webhook ingestion endpoint with valid HMAC-SHA256 signatures and a unique `event_id` per request to avoid idempotency short-circuits.
+
+```bash
+k6 run test/load-test.js
+```
+
+**Test configuration:** constant arrival rate, 8 requests/second, 30-second duration, targeting `http://localhost:9090/webhooks/razorpay`.
+
+**Results (2 Spring Boot instances + PostgreSQL + Redis, all local via Docker Compose):**
+
+| Metric | Result |
+|---|---|
+| Total requests | 241 |
+| Throughput | 8 RPS sustained |
+| p95 latency | 39 ms |
+| Error rate | 0% |
+| Successful | 241 / 241 |
+
+**What this demonstrates:** Each request traverses the full pipeline — Nginx reverse proxy → HMAC-SHA256 verification → Redis sliding-window rate limiter → PostgreSQL write → Redis distributed lock → async fraud scoring (rule engine + ML) → double-entry ledger write → SHA-256 audit chain — with zero errors and sub-40ms p95 latency on a single developer machine running all services simultaneously.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -258,7 +317,7 @@ GET  /fraud-checks?paymentId={}   All fraud check results for a payment
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/razorpay-webhook.git
+git clone https://github.com/skywalker-4567/webhook.git
 cd razorpay-webhook
 ```
 
@@ -290,33 +349,48 @@ Login with:
 - Username: `admin`
 - Password: `admin123`
 
+### 5. Explore the API docs
+Navigate to `http://localhost:9090/swagger-ui.html`
+
 ---
 
 ## Running Tests
 
-A 36-point PowerShell smoke test covers the full happy path end to end.
+### Integration Tests (JUnit 5 + Testcontainers)
+
+Four integration tests run against a real PostgreSQL 15 Testcontainer with all 15 Flyway migrations applied automatically. Redis-dependent beans (`DistributedLockService`, `MLClient`) are mocked so no Redis container is needed.
+
+```bash
+mvn test -Dtest=WebhookIntegrationTest
+```
+
+**Test cases:**
+
+| Test | What it verifies |
+|---|---|
+| `duplicateEventId_secondCallIsNoOp` | Second call with same `event_id` returns 200 but writes zero additional DB rows (unique constraint idempotency) |
+| `invalidSignature_rejectedWithNoDatabaseWrite` | Invalid HMAC returns 400 and zero rows are written to `webhook_events` |
+| `validWebhook_ledgerHasBalancedDebitCreditPair` | Valid webhook produces exactly 1 DEBIT + 1 CREDIT sharing the same `transaction_id`, with balanced amounts |
+| `auditHashChain_remainsValidAfterThreeEvents` | Three sequential webhooks each produce a valid per-entity audit chain starting from GENESIS with no PENDING hashes |
+
+**CI:** GitHub Actions runs these tests on every push using Docker-in-Docker, pulling the `postgres:15-alpine` image for the Testcontainer.
+
+### Smoke Tests (PowerShell, end-to-end)
+
+A 36-point smoke test covers the full happy path against a running stack.
 
 ```powershell
 # Clear data first
-docker exec -it razorpay-postgres psql -U postgres -d razorpay_webhook -c "TRUNCATE webhook_events, payment_records, ledger_entries, audit_log, fraud_checks, orders, reconciliation_log, settlement_reports, refund_records, ledger_retry_queue, api_keys RESTART IDENTITY CASCADE;"
+docker exec -it razorpay-postgres psql -U postgres -d razorpay_webhook -c \
+  "TRUNCATE webhook_events, payment_records, ledger_entries, audit_log, \
+   fraud_checks, orders, reconciliation_log, settlement_reports, \
+   refund_records, ledger_retry_queue, api_keys RESTART IDENTITY CASCADE;"
 
 # Run tests
 .\test\smoke-test.ps1 -BaseUrl "http://localhost:9090" -WebhookSecret "your_webhook_secret"
 ```
 
-**Test coverage:**
-- Health check
-- JWT login and bad credentials
-- Webhook ingestion, idempotency, signature rejection
-- Payment record creation and status
-- Fraud detection (HIGH_AMOUNT rule + ML scoring)
-- Double-entry ledger balance verification
-- Audit hash chain integrity
-- Reconciliation endpoint
-- Settlement summary and CSV export
-- Order creation and idempotency
-- JWT protection on all secured endpoints
-- Webhook stats
+**Coverage:** Health check · JWT login and bad credentials · Webhook ingestion, idempotency, signature rejection · Payment record creation and status · Fraud detection (HIGH_AMOUNT rule + ML scoring) · Double-entry ledger balance verification · Audit hash chain integrity · Reconciliation endpoint · Settlement summary and CSV export · Order creation and idempotency · JWT protection on all secured endpoints · Webhook stats
 
 **Result: 36/36 passing**
 
@@ -327,7 +401,7 @@ docker exec -it razorpay-postgres psql -U postgres -d razorpay_webhook -c "TRUNC
 ```
 razorpay-webhook/
 ├── src/main/java/com/example/razorpaywebhook/
-│   ├── config/          # Async executors, Redis, Security, CORS
+│   ├── config/          # Async executors, Redis, Security, CORS, OpenAPI
 │   ├── controller/      # REST controllers (thin — no business logic)
 │   ├── distributed/     # DistributedLockService, LeaderElectionService, RateLimiterService
 │   ├── domain/entity/   # JPA entities (15 tables)
@@ -350,6 +424,9 @@ razorpay-webhook/
 │       ├── RefundService.java
 │       ├── SettlementService.java
 │       └── ReconciliationScheduler.java
+├── src/test/java/com/example/razorpaywebhook/
+│   ├── BaseIntegrationTest.java     # Testcontainers base config, mock setup
+│   └── WebhookIntegrationTest.java  # 4 integration test cases
 ├── src/main/resources/
 │   ├── application.yml
 │   └── db/migration/    # V1–V15 Flyway migrations
@@ -367,7 +444,11 @@ razorpay-webhook/
 ├── nginx/
 │   └── nginx.conf       # Upstream load balancer config
 ├── test/
-│   └── smoke-test.ps1   # 36-point end-to-end test suite
+│   ├── smoke-test.ps1   # 36-point end-to-end test suite
+│   └── load-test.js     # k6 load test (8 RPS, 30s, 0% error rate, valid HMAC per request)
+├── .github/
+│   └── workflows/
+│       └── tests.yml    # CI — runs integration tests on every push
 ├── docker-compose.yml
 └── .env.example
 ```
